@@ -1276,7 +1276,7 @@ describe("RealtimeCallHandler path routing", () => {
       expect(consult.mock.calls[1]).toEqual([
         { question: "Check the new deployment." },
         "call-1",
-        { abortSignal: expect.any(AbortSignal) },
+        { abortSignal: expect.any(AbortSignal), toolPolicy: "safe-read-only" },
       ]);
       expect(clearAudio).toHaveBeenCalledTimes(3);
     } finally {
@@ -1457,6 +1457,7 @@ describe("RealtimeCallHandler path routing", () => {
     expect(context).toEqual({
       partialUserTranscript: "Send a Discord message.",
       abortSignal: expect.any(AbortSignal),
+      toolPolicy: "safe-read-only",
     });
     await waitForRealtimeTest(() =>
       expect(submitToolResult).toHaveBeenLastCalledWith(

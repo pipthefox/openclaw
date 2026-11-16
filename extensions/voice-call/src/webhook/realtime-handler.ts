@@ -51,6 +51,10 @@ import {
   type RealtimeCallControlResult,
 } from "./realtime-call-session-control.js";
 import {
+  createRealtimeElevationReporter,
+  type DtmfElevationGate,
+} from "./realtime-dtmf-elevation.js";
+import {
   appendTranscriptText,
   resolveFinalTranscriptText,
   limitPartialUserTranscript,
@@ -207,6 +211,11 @@ type RealtimeTelephonyBinding = {
   bridge: ActiveRealtimeVoiceBridge;
   acknowledgeCarrierMark: (markName?: string) => void;
   close: (cause?: RealtimeCallEndCause) => Promise<void>;
+  /** Consult tool policy for this binding, including keypad elevation. */
+  consultToolPolicy: () => VoiceCallRealtimeConfig["toolPolicy"];
+  acceptDtmf: (digit: string) => void;
+  /** True while PIN digits are being entered; caller audio is withheld from the model. */
+  isCollectingPin: () => boolean;
   endCall: () => void;
   noteMediaActivity: () => void;
   playVoicemail: (instructions: string) => Promise<void>;
@@ -238,6 +247,7 @@ export class RealtimeCallHandler {
     private readonly streamDisconnectLifecycle: StreamDisconnectLifecycle,
     private readonly coreConfig?: OpenClawConfig,
     private readonly holdOpeningMaxMs?: number,
+    private readonly elevation?: DtmfElevationGate,
   ) {}
 
   setPublicUrl(url: string): void {
@@ -386,9 +396,17 @@ export class RealtimeCallHandler {
           if (!telephonyBinding) {
             return;
           }
+          if (frame.kind === "dtmf") {
+            // Keypresses never reach the realtime model or the transcript.
+            telephonyBinding.acceptDtmf(frame.digit);
+            return;
+          }
           if (frame.kind === "media") {
             const audio = Buffer.from(frame.payloadBase64, "base64");
             telephonyBinding.noteMediaActivity();
+            if (telephonyBinding.isCollectingPin()) {
+              return;
+            }
             telephonyBinding.bridge.sendAudio(audio);
             if (frame.timestampMs !== undefined) {
               if (lastMediaTimestamp !== undefined) {
@@ -1163,6 +1181,22 @@ export class RealtimeCallHandler {
     }
     const session = candidate;
     nativeConsultOwner = session;
+    const elevationCall = this.elevation?.openCall(
+      callRecord,
+      createRealtimeElevationReporter({
+        callId,
+        caller: callRecord.from,
+        isCurrent: () => !sessionClosed && this.isActiveBridgeOwner(callId, session),
+        sendNotice: (notice) => session.sendUserMessage(notice),
+        hangUp: async () => {
+          const result = await this.manager.endCall(callId);
+          if (result.success) {
+            telephonyBinding.endCall();
+          }
+          return result;
+        },
+      }),
+    );
     const localBargeIn =
       !(session.bridge.handlesInputAudioBargeIn ?? providerHandlesInputAudioBargeIn) &&
       resolveRealtimeVoiceBargeIn({
@@ -1205,6 +1239,7 @@ export class RealtimeCallHandler {
         return sessionClosePromise ?? Promise.resolve();
       }
       sessionClosed = true;
+      elevationCall?.close();
       outboundGreeting.close();
       hostSpeech.close();
       activity.close();
@@ -1288,6 +1323,9 @@ export class RealtimeCallHandler {
         }
       },
       close: (cause) => closeBinding(cause),
+      consultToolPolicy: () => elevationCall?.toolPolicy ?? this.config.toolPolicy,
+      acceptDtmf: (digit) => elevationCall?.acceptDigit(digit),
+      isCollectingPin: () => elevationCall?.collecting === true,
       endCall: () => {
         // Close the provider session before the carrier socket so no pending
         // response can reach the caller after the hang-up request succeeds.
@@ -1353,6 +1391,15 @@ export class RealtimeCallHandler {
       // A fresh provider session must not inherit cancelled/recent consult dedupe.
       coordinator.clear();
     }
+  }
+
+  /** This call's consult policy, including keypad elevation, for the bridge that owns it. */
+  private resolveConsultToolPolicy(
+    callId: string,
+    owner: ActiveRealtimeVoiceBridge,
+  ): VoiceCallRealtimeConfig["toolPolicy"] {
+    const binding = this.activeTelephonyBindingsByCallId.get(callId);
+    return binding?.bridge === owner ? binding.consultToolPolicy() : this.config.toolPolicy;
   }
 
   private isActiveBridgeOwner(callId: string, owner: ActiveRealtimeVoiceBridge): boolean {
@@ -1473,7 +1520,10 @@ export class RealtimeCallHandler {
             question: params.handle.question,
           },
           params.callId,
-          { abortSignal: abortController.signal },
+          {
+            abortSignal: abortController.signal,
+            toolPolicy: this.resolveConsultToolPolicy(params.callId, params.session),
+          },
         );
       }),
     };
@@ -1792,6 +1842,7 @@ export class RealtimeCallHandler {
           const context = {
             partialUserTranscript: transcript?.text,
             abortSignal: abortController.signal,
+            toolPolicy: this.resolveConsultToolPolicy(callId, bridge),
           };
           const handlerArgs = withFallbackConsultQuestion(args, context.partialUserTranscript);
           return await invokeHandler(handlerArgs, context);

@@ -15,6 +15,7 @@ type StreamFrame =
     }
   | { kind: "mark"; name?: string }
   | { kind: "stop" }
+  | { kind: "dtmf"; digit: string }
   | { kind: "error"; code?: string; title?: string; detail?: string }
   | { kind: "ignored" };
 
@@ -74,6 +75,14 @@ export class StreamFrameAdapter {
       }
       case "stop":
         return { kind: "stop" };
+      case "dtmf": {
+        // Twilio bidirectional streams report caller keypresses; other providers are not parsed.
+        const dtmf = asOptionalObjectRecord(msg.dtmf);
+        const digit = typeof dtmf?.digit === "string" ? dtmf.digit : undefined;
+        return this.provider === "twilio" && digit && /^[0-9*#A-D]$/.test(digit)
+          ? { kind: "dtmf", digit }
+          : { kind: "ignored" };
+      }
       case "error": {
         if (this.provider !== "telnyx") {
           return { kind: "ignored" };

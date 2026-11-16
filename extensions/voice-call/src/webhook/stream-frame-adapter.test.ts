@@ -3,6 +3,25 @@ import { describe, expect, it } from "vitest";
 import { StreamFrameAdapter } from "./stream-frame-adapter.js";
 
 describe("Twilio stream frames", () => {
+  it("parses Twilio keypad digits and leaves other providers' dtmf frames ignored", () => {
+    const twilio = new StreamFrameAdapter("twilio");
+    const parse = (msg: unknown) => twilio.parseInbound(JSON.stringify(msg));
+    for (const digit of ["0", "9", "*", "#", "A"]) {
+      expect(parse({ event: "dtmf", dtmf: { track: "inbound", digit } })).toEqual({
+        kind: "dtmf",
+        digit,
+      });
+    }
+    expect(parse({ event: "dtmf", dtmf: { digit: "12" } })).toEqual({ kind: "ignored" });
+    expect(parse({ event: "dtmf", dtmf: { digit: 1 } })).toEqual({ kind: "ignored" });
+    expect(parse({ event: "dtmf" })).toEqual({ kind: "ignored" });
+    expect(
+      new StreamFrameAdapter("telnyx").parseInbound(
+        JSON.stringify({ event: "dtmf", dtmf: { digit: "1" } }),
+      ),
+    ).toEqual({ kind: "ignored" });
+  });
+
   it("parses Twilio start, media, mark, stop, and ignores junk", () => {
     const adapter = new StreamFrameAdapter("twilio");
 

@@ -21,6 +21,7 @@ import {
   resolveVoiceCallNumberRouteKeyForCall,
   resolveVoiceCallSessionKey,
   resolveVoiceCallStreamExposurePaths,
+  resolveRealtimeElevationPin,
   resolveTwilioAuthToken,
   resolveVoiceCallConfig,
   validateProviderConfig,
@@ -42,6 +43,7 @@ import {
   providerRequiresPublicWebhook,
 } from "./webhook-exposure.js";
 import { VoiceCallWebhookServer } from "./webhook.js";
+import type { DtmfElevationGate } from "./webhook/realtime-dtmf-elevation.js";
 import { cleanupTailscaleExposure, setupTailscaleExposure } from "./webhook/tailscale.js";
 
 export type VoiceCallRuntime = {
@@ -265,6 +267,16 @@ export async function createVoiceCallRuntime(params: {
   );
   if (realtimeVoiceRuntime) {
     const { RealtimeCallHandler } = await import("./webhook/realtime-handler.js");
+    const elevationPin = resolveRealtimeElevationPin(config);
+    let elevation: DtmfElevationGate | undefined;
+    if (elevationPin) {
+      const { DtmfElevationGate } = await import("./webhook/realtime-dtmf-elevation.js");
+      elevation = new DtmfElevationGate({
+        pin: elevationPin,
+        config: config.realtime.elevation,
+        allowFrom: config.allowFrom,
+      });
+    }
     const resolveRealtimeInstructions = await createRealtimeInstructionsResolver({
       config,
       coreConfig: cfg,
@@ -302,6 +314,7 @@ export async function createVoiceCallRuntime(params: {
       webhookServer.getStreamDisconnectLifecycle(),
       cfg,
       config.voicemail.holdOpeningMaxMs,
+      elevation,
     );
     if (config.realtime.toolPolicy !== "none") {
       realtimeHandler.registerToolHandler(
@@ -396,8 +409,9 @@ export async function createVoiceCallRuntime(params: {
             spawnedBy: requesterSessionKey,
             contextMode: requesterSessionKey ? "fork" : undefined,
             toolsAllow: (() => {
+              // The realtime handler supplies this call's policy, including keypad elevation.
               const allowed = resolveRealtimeVoiceAgentConsultToolsAllow(
-                effectiveConfig.realtime.toolPolicy,
+                handlerContext.toolPolicy ?? effectiveConfig.realtime.toolPolicy,
               );
               return allowed?.length ? [...allowed, "voice_call"] : allowed;
             })(),

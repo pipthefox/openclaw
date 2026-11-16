@@ -12,6 +12,7 @@ import {
   registerFastContextMemoryProvider,
 } from "./runtime.fast-context.test-support.js";
 import { createExternalProviderConfig, createVoiceCallBaseConfig } from "./test-fixtures.js";
+import { DtmfElevationGate } from "./webhook/realtime-dtmf-elevation.js";
 import type { RealtimeCallHandler } from "./webhook/realtime-handler.js";
 
 const mocks = vi.hoisted(() => ({
@@ -42,7 +43,9 @@ const mocks = vi.hoisted(() => ({
   cleanupTailscaleExposure: vi.fn(),
 }));
 
-vi.mock("./config.js", () => ({
+vi.mock("./config.js", async (importOriginal) => ({
+  resolveRealtimeElevationPin: (await importOriginal<typeof import("./config.js")>())
+    .resolveRealtimeElevationPin,
   resolveVoiceCallSessionKey: (params: {
     config: Pick<VoiceCallConfig, "agentId" | "sessionScope">;
     callId: string;
@@ -546,6 +549,8 @@ describe("createVoiceCallRuntime lifecycle", () => {
       responseModel: "openai/gpt-5.5",
     };
     config.realtime.enabled = true;
+    config.allowFrom = ["+15550001234"];
+    config.realtime.elevation = { ...config.realtime.elevation, enabled: true, pin: "2468" };
     config.realtime.tools = [
       {
         type: "function",
@@ -607,6 +612,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
       "openclaw_agent_consult",
       "custom_tool",
     ]);
+    expect(mocks.realtimeHandlerCtorArgs[0]?.[7]).toBeInstanceOf(DtmfElevationGate);
     const handler = requireRealtimeConsultToolHandler();
     await expect(
       handler({ question: "What should I say?" }, "call-1", {
@@ -645,6 +651,10 @@ describe("createVoiceCallRuntime lifecycle", () => {
     expect(consultParams.extraSystemPrompt).toContain("Ask for tomorrow delivery");
     expect(consultParams.prompt).toContain("Caller: Can you check shipment status?");
     expect(consultParams.prompt).toContain("Caller: Also check the ETA.");
+    // A keypad-elevated call's owner policy leaves the normal agent tool policy in charge.
+    await handler({ question: "Check my calendar." }, "call-1", { toolPolicy: "owner" });
+    const elevated = requireRecord(runEmbeddedAgent.mock.calls.at(1)?.[0], "elevated consult");
+    expect(elevated.toolsAllow).toBeUndefined();
   });
 
   it("always exposes the built-in end-call tool without allowing configured replacement", async () => {

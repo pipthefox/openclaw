@@ -67,6 +67,13 @@ export function makeHandler(params: {
       includeWorkspaceFiles: true,
       files: ["SOUL.md", "IDENTITY.md", "USER.md"],
     },
+    elevation: {
+      enabled: false,
+      prefix: "*",
+      elevatedToolPolicy: "owner",
+      maxAttempts: 3,
+      lockoutMs: 3_600_000,
+    },
     providers: {},
     ...(params.idleHangupMs ? { idleHangupMs: params.idleHangupMs } : {}),
   } satisfies VoiceCallRealtimeConfig;
